@@ -8,11 +8,13 @@ import 'package:flutter/services.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 // ================= CONFIG (edit + hot-reload) =================
-// From inside the AGL guest, the host laptop/server is reachable at 10.0.2.2
-// (QEMU user-net gateway). Point this at wherever rosbridge_server runs.
-const String kRosbridgeUrl = 'ws://10.0.2.2:9090';
+// Self-contained demo: a recorded LiDAR bag (shipped under rosbag/) is played
+// back on-device and bridged locally, so rosbridge_server runs on the same
+// board as the app. Point at localhost. (For a live/remote source, set this to
+// the host running rosbridge_server, e.g. ws://<host-ip>:9090.)
+const String kRosbridgeUrl = 'ws://127.0.0.1:9090';
 
-// CARLA's bridge publishes /carla/lidar as PointCloud2 (x,y,z,intensity).
+// The shipped bag publishes /carla/lidar as PointCloud2 (x,y,z,intensity).
 // For a 2D LaserScan source instead, use '/scan' + 'sensor_msgs/msg/LaserScan'.
 const String kLidarTopic = '/carla/lidar';
 const String kLidarType = 'sensor_msgs/msg/PointCloud2';
