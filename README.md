@@ -15,7 +15,7 @@ CARLA LiDAR  ->  ROS 2 PointCloud2  ->  rosbridge (WebSocket :9090)  ->  Flutter
    (recorded into the shipped rosbag)                                    (this app)
 ```
 
-- App name / bundle id: `agl_hmi_demo`
+- App name / bundle id: `agl_lidar_demo`
 - rosbridge endpoint: `ws://127.0.0.1:9090` (see `kRosbridgeUrl` in `lib/main.dart`)
 - Topic: `/carla/lidar`, `PointCloud2` with `x, y, z, intensity`
 - Range shown: 50 m (matches the CARLA sensor configuration)
