@@ -12,12 +12,27 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 // back on-device and bridged locally, so rosbridge_server runs on the same
 // board as the app. Point at localhost. (For a live/remote source, set this to
 // the host running rosbridge_server, e.g. ws://<host-ip>:9090.)
-const String kRosbridgeUrl = 'ws://127.0.0.1:9090';
+// Default targets an on-device rosbridge (the shipped self-contained demo).
+// Override without editing code, e.g. for the QEMU dev loop where the guest
+// reaches the host at 10.0.2.2:
+//   flutter run -d agl-qemu --dart-define=ROSBRIDGE_URL=ws://10.0.2.2:9090
+const String kRosbridgeUrl = String.fromEnvironment(
+  'ROSBRIDGE_URL',
+  defaultValue: 'ws://127.0.0.1:9090',
+);
 
 // The shipped bag publishes /carla/lidar as PointCloud2 (x,y,z,intensity).
 // For a 2D LaserScan source instead, use '/scan' + 'sensor_msgs/msg/LaserScan'.
 const String kLidarTopic = '/carla/lidar';
 const String kLidarType = 'sensor_msgs/msg/PointCloud2';
+
+// The perception node (lidar_detector) publishes 3D bounding boxes for the
+// clustered objects on /carla/detections. Rendering these on top of the raw
+// cloud is what turns the point view into a perception view. The same topic +
+// type is the contract a learned detector (e.g. PointPillars) would publish
+// on later, so the HMI does not change when the perception backend is upgraded.
+const String kDetTopic = '/carla/detections';
+const String kDetType = 'vision_msgs/msg/Detection3DArray';
 
 const double kMaxRange = 50.0; // metres shown (matches CARLA lidar range)
 
@@ -29,6 +44,7 @@ const double kMaxZ = 6.0;
 
 const Color kNear = Color(0xFF00E5C3); // close returns  (warm/teal)
 const Color kFar = Color(0xFF1E5AFF); // distant returns (cool/blue)
+const Color kDetColor = Color(0xFF35D06B); // perception boxes (green)
 // =============================================================
 
 void main() => runApp(const AglLidarApp());
@@ -51,6 +67,15 @@ class Pt {
   const Pt(this.x, this.y, this.i);
 }
 
+/// A detected object's 3D box, projected to the ground plane. Centre [cx],[cy]
+/// and footprint size [sx],[sy] are metres in the sensor frame (x forward,
+/// y left); [yaw] is the box heading in radians (0 for the axis-aligned boxes
+/// the clustering node currently emits).
+class Box {
+  final double cx, cy, sx, sy, yaw;
+  const Box(this.cx, this.cy, this.sx, this.sy, this.yaw);
+}
+
 enum Source { sim, live }
 
 class _LiveState {
@@ -70,6 +95,7 @@ class _LidarScreenState extends State<LidarScreen>
     with SingleTickerProviderStateMixin {
   Source _source = Source.sim;
   List<Pt> _points = const [];
+  List<Box> _boxes = const [];
   String _status = 'simulated scene';
   String _live = _LiveState.connecting;
   int _hz = 0;
@@ -141,6 +167,7 @@ class _LidarScreenState extends State<LidarScreen>
   // ---------------- simulated LiDAR ----------------
   void _startSim() {
     _simTimer?.cancel();
+    _boxes = const []; // the synthetic sweep has no perception boxes
     _status = 'simulated scene — corridor + moving traffic';
     _simTimer = Timer.periodic(const Duration(milliseconds: 66), (_) {
       _t += 0.066;
@@ -220,6 +247,7 @@ class _LidarScreenState extends State<LidarScreen>
     setState(() {
       _status = 'connecting to $kRosbridgeUrl';
       _points = const [];
+      _boxes = const [];
     });
     try {
       final ch = WebSocketChannel.connect(Uri.parse(kRosbridgeUrl));
@@ -230,6 +258,15 @@ class _LidarScreenState extends State<LidarScreen>
         'type': kLidarType,
         'throttle_rate': 0, // ms; 0 = as fast as it arrives
         'queue_length': 1, // only ever hold the newest frame
+      }));
+      // Also subscribe to the perception node's 3D detections. Boxes are tiny
+      // (a handful of floats each) next to the cloud, so no throttling needed.
+      ch.sink.add(jsonEncode({
+        'op': 'subscribe',
+        'topic': kDetTopic,
+        'type': kDetType,
+        'throttle_rate': 0,
+        'queue_length': 1,
       }));
       _sub = ch.stream.listen(
         _onRosMessage,
@@ -267,6 +304,14 @@ class _LidarScreenState extends State<LidarScreen>
       final data = jsonDecode(raw as String) as Map<String, dynamic>;
       if (data['op'] != 'publish') return;
       final msg = data['msg'] as Map<String, dynamic>;
+
+      // Detections arrive on their own topic — update the box overlay and
+      // return without touching the point layer.
+      if (data['topic'] == kDetTopic || msg.containsKey('detections')) {
+        setState(() => _boxes = _parseDetections(msg));
+        return;
+      }
+
       List<Pt> pts;
       if (msg.containsKey('fields') && msg.containsKey('data')) {
         pts = _parsePointCloud2(msg); // CARLA /carla/lidar
@@ -370,6 +415,36 @@ class _LidarScreenState extends State<LidarScreen>
     return out;
   }
 
+  /// Decode a vision_msgs/Detection3DArray from rosbridge. Each detection's
+  /// `bbox` carries a centre pose and a size; we keep the ground-plane footprint
+  /// (x/y centre, x/y size) and the yaw recovered from the pose quaternion.
+  List<Box> _parseDetections(Map<String, dynamic> m) {
+    final dets = m['detections'];
+    if (dets is! List) return const [];
+    final out = <Box>[];
+    for (final d in dets) {
+      final bbox = (d as Map)['bbox'] as Map?;
+      if (bbox == null) continue;
+      final center = bbox['center'] as Map?;
+      final size = bbox['size'] as Map?;
+      if (center == null || size == null) continue;
+      final pos = center['position'] as Map?;
+      if (pos == null) continue;
+      final cx = (pos['x'] as num?)?.toDouble() ?? 0;
+      final cy = (pos['y'] as num?)?.toDouble() ?? 0;
+      final sx = (size['x'] as num?)?.toDouble() ?? 0;
+      final sy = (size['y'] as num?)?.toDouble() ?? 0;
+      if (sx <= 0 || sy <= 0) continue;
+      // yaw from the quaternion (z,w) — planar heading about the vertical axis.
+      final q = center['orientation'] as Map?;
+      final qz = (q?['z'] as num?)?.toDouble() ?? 0;
+      final qw = (q?['w'] as num?)?.toDouble() ?? 1;
+      final yaw = atan2(2 * qw * qz, 1 - 2 * qz * qz);
+      out.add(Box(cx, cy, sx, sy, yaw));
+    }
+    return out;
+  }
+
   double _rangeToColor(double d) => (1.0 - d / kMaxRange).clamp(0.0, 1.0);
 
   void _setPoints(List<Pt> pts) {
@@ -423,7 +498,7 @@ class _LidarScreenState extends State<LidarScreen>
           children: [
             Positioned.fill(
               child: CustomPaint(
-                painter: LidarPainter(_points, _spin),
+                painter: LidarPainter(_points, _boxes, _spin),
               ),
             ),
             if (showWaitOverlay) _waitOverlay(),
@@ -464,6 +539,10 @@ class _LidarScreenState extends State<LidarScreen>
               Row(children: [
                 _chip('${_points.length} pts', Colors.white70),
                 const SizedBox(width: 10),
+                if (_boxes.isNotEmpty) ...[
+                  _chip('${_boxes.length} obj', kDetColor),
+                  const SizedBox(width: 10),
+                ],
                 _chip('$_hz Hz', Colors.white70),
                 const SizedBox(width: 10),
                 _statusChip(badge),
@@ -598,8 +677,9 @@ class _LidarScreenState extends State<LidarScreen>
 
 class LidarPainter extends CustomPainter {
   final List<Pt> points;
+  final List<Box> boxes;
   final Animation<double> spin;
-  LidarPainter(this.points, this.spin) : super(repaint: spin);
+  LidarPainter(this.points, this.boxes, this.spin) : super(repaint: spin);
 
   static const int _bands = 6;
 
@@ -611,7 +691,51 @@ class LidarPainter extends CustomPainter {
     _drawGrid(canvas, size, center, scale);
     _drawSweep(canvas, center, scale);
     _drawPoints(canvas, center, scale);
+    _drawBoxes(canvas, center, scale);
     _drawEgo(canvas, center);
+  }
+
+  /// Draw each detection as a footprint rectangle on the ground plane. Sensor
+  /// x (forward) maps to screen up, y (left) maps to screen left — the same
+  /// transform the points use — so boxes sit exactly over their clusters.
+  void _drawBoxes(Canvas canvas, Offset center, double scale) {
+    if (boxes.isEmpty) return;
+    final stroke = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.0
+      ..color = kDetColor;
+    final fill = Paint()
+      ..style = PaintingStyle.fill
+      ..color = kDetColor.withOpacity(0.12);
+    for (final b in boxes) {
+      // four footprint corners in the sensor frame, rotated by yaw
+      final hx = b.sx / 2, hy = b.sy / 2;
+      final ca = cos(b.yaw), sa = sin(b.yaw);
+      final path = Path();
+      const corners = [
+        [1.0, 1.0],
+        [1.0, -1.0],
+        [-1.0, -1.0],
+        [-1.0, 1.0],
+      ];
+      for (int k = 0; k < corners.length; k++) {
+        final lx = corners[k][0] * hx, ly = corners[k][1] * hy;
+        // rotate in sensor frame
+        final wx = b.cx + lx * ca - ly * sa;
+        final wy = b.cy + lx * sa + ly * ca;
+        // sensor -> screen
+        final sx = center.dx - wy * scale;
+        final sy = center.dy - wx * scale;
+        if (k == 0) {
+          path.moveTo(sx, sy);
+        } else {
+          path.lineTo(sx, sy);
+        }
+      }
+      path.close();
+      canvas.drawPath(path, fill);
+      canvas.drawPath(path, stroke);
+    }
   }
 
   void _drawGrid(Canvas canvas, Size size, Offset center, double scale) {
