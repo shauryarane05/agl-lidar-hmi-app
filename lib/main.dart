@@ -42,12 +42,15 @@ const String kDetType = 'vision_msgs/msg/Detection3DArray';
 // Set --dart-define=SHOW_CAMERAS=false to hide the camera column.
 const bool kShowCameras =
     bool.fromEnvironment('SHOW_CAMERAS', defaultValue: true);
+// JPEG-compressed camera topics: small frames arrive with near-zero latency,
+// so the camera stays in step with the LiDAR (raw frames lag behind the tiny
+// point-cloud messages over a bandwidth-limited link).
 const String kCamFrontTopic = String.fromEnvironment('CAM_FRONT_TOPIC',
-    defaultValue: '/carla/hero/rgb_front/image');
+    defaultValue: '/carla/hero/rgb_front/image/compressed');
 const String kCamAerialTopic = String.fromEnvironment('CAM_AERIAL_TOPIC',
-    defaultValue: '/carla/hero/rgb_aerial/image');
-const String kCamType = 'sensor_msgs/msg/Image';
-const int kCamThrottleMs = 200; // ~5 Hz; matches the recorded camera rate
+    defaultValue: '/carla/hero/rgb_aerial/image/compressed');
+const String kCamType = 'sensor_msgs/msg/CompressedImage';
+const int kCamThrottleMs = 0; // frames are tiny now; take them as they arrive
 
 const double kMaxRange = 50.0; // metres shown (matches CARLA lidar range)
 
@@ -463,6 +466,22 @@ class _LidarScreenState extends State<LidarScreen>
   // and store it as the newest frame for the front or aerial panel.
   void _decodeCamera(Map<String, dynamic> m, {required bool isFront}) {
     try {
+      // CompressedImage (jpeg/png): let the codec decode the encoded bytes.
+      if (m.containsKey('format')) {
+        final bytes = base64Decode(m['data'] as String);
+        ui.decodeImageFromList(bytes, (img) {
+          if (!mounted) return;
+          setState(() {
+            if (isFront) {
+              _camFront = img;
+            } else {
+              _camAerial = img;
+            }
+          });
+        });
+        return;
+      }
+
       final w = (m['width'] as num).toInt();
       final h = (m['height'] as num).toInt();
       final enc = (m['encoding'] as String?)?.toLowerCase() ?? 'bgra8';
