@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 import 'dart:ui' show PointMode;
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
@@ -33,6 +34,20 @@ const String kLidarType = 'sensor_msgs/msg/PointCloud2';
 // on later, so the HMI does not change when the perception backend is upgraded.
 const String kDetTopic = '/carla/detections';
 const String kDetType = 'vision_msgs/msg/Detection3DArray';
+
+// Camera feeds. The finalized recording carries two RGB cameras alongside the
+// LiDAR: a forward-facing view and a top-down "aerial" view. They arrive on the
+// SAME rosbridge as everything else (sensor_msgs/Image, bgra8), so no extra
+// service is needed. Throttled server-side to keep the raw frames light.
+// Set --dart-define=SHOW_CAMERAS=false to hide the camera column.
+const bool kShowCameras =
+    bool.fromEnvironment('SHOW_CAMERAS', defaultValue: true);
+const String kCamFrontTopic = String.fromEnvironment('CAM_FRONT_TOPIC',
+    defaultValue: '/carla/hero/rgb_front/image');
+const String kCamAerialTopic = String.fromEnvironment('CAM_AERIAL_TOPIC',
+    defaultValue: '/carla/hero/rgb_aerial/image');
+const String kCamType = 'sensor_msgs/msg/Image';
+const int kCamThrottleMs = 200; // ~5 Hz; matches the recorded camera rate
 
 const double kMaxRange = 50.0; // metres shown (matches CARLA lidar range)
 
@@ -96,6 +111,9 @@ class _LidarScreenState extends State<LidarScreen>
   Source _source = Source.sim;
   List<Pt> _points = const [];
   List<Box> _boxes = const [];
+  // Latest decoded camera frames (null until the first frame arrives).
+  ui.Image? _camFront;
+  ui.Image? _camAerial;
   String _status = 'simulated scene';
   String _live = _LiveState.connecting;
   int _hz = 0;
@@ -248,6 +266,8 @@ class _LidarScreenState extends State<LidarScreen>
       _status = 'connecting to $kRosbridgeUrl';
       _points = const [];
       _boxes = const [];
+      _camFront = null;
+      _camAerial = null;
     });
     try {
       final ch = WebSocketChannel.connect(Uri.parse(kRosbridgeUrl));
@@ -268,6 +288,19 @@ class _LidarScreenState extends State<LidarScreen>
         'throttle_rate': 0,
         'queue_length': 1,
       }));
+      // Camera feeds (same rosbridge). Throttled + newest-only so the raw
+      // frames never back up behind the point cloud.
+      if (kShowCameras) {
+        for (final t in [kCamFrontTopic, kCamAerialTopic]) {
+          ch.sink.add(jsonEncode({
+            'op': 'subscribe',
+            'topic': t,
+            'type': kCamType,
+            'throttle_rate': kCamThrottleMs,
+            'queue_length': 1,
+          }));
+        }
+      }
       _sub = ch.stream.listen(
         _onRosMessage,
         onError: (e) => setState(() {
@@ -309,6 +342,14 @@ class _LidarScreenState extends State<LidarScreen>
       // return without touching the point layer.
       if (data['topic'] == kDetTopic || msg.containsKey('detections')) {
         setState(() => _boxes = _parseDetections(msg));
+        return;
+      }
+
+      // Camera frames (sensor_msgs/Image). Decode off the raw bytes and store
+      // the newest ui.Image for that panel.
+      final topic = data['topic'];
+      if (topic == kCamFrontTopic || topic == kCamAerialTopic) {
+        _decodeCamera(msg, isFront: topic == kCamFrontTopic);
         return;
       }
 
@@ -418,6 +459,50 @@ class _LidarScreenState extends State<LidarScreen>
   /// Decode a vision_msgs/Detection3DArray from rosbridge. Each detection's
   /// `bbox` carries a centre pose and a size; we keep the ground-plane footprint
   /// (x/y centre, x/y size) and the yaw recovered from the pose quaternion.
+  // Decode a sensor_msgs/Image (raw, from rosbridge as base64) into a ui.Image
+  // and store it as the newest frame for the front or aerial panel.
+  void _decodeCamera(Map<String, dynamic> m, {required bool isFront}) {
+    try {
+      final w = (m['width'] as num).toInt();
+      final h = (m['height'] as num).toInt();
+      final enc = (m['encoding'] as String?)?.toLowerCase() ?? 'bgra8';
+      final bytes = base64Decode(m['data'] as String);
+
+      Uint8List rgba;
+      ui.PixelFormat fmt;
+      if (enc == 'bgra8' || enc == 'rgba8') {
+        rgba = bytes;
+        fmt = enc == 'bgra8' ? ui.PixelFormat.bgra8888 : ui.PixelFormat.rgba8888;
+      } else if (enc == 'bgr8' || enc == 'rgb8') {
+        // Expand 3-channel to 4-channel so decodeImageFromPixels can take it.
+        final px = w * h;
+        rgba = Uint8List(px * 4);
+        for (int i = 0; i < px; i++) {
+          rgba[i * 4] = bytes[i * 3];
+          rgba[i * 4 + 1] = bytes[i * 3 + 1];
+          rgba[i * 4 + 2] = bytes[i * 3 + 2];
+          rgba[i * 4 + 3] = 255;
+        }
+        fmt = enc == 'bgr8' ? ui.PixelFormat.bgra8888 : ui.PixelFormat.rgba8888;
+      } else {
+        return; // unsupported encoding
+      }
+
+      ui.decodeImageFromPixels(rgba, w, h, fmt, (img) {
+        if (!mounted) return;
+        setState(() {
+          if (isFront) {
+            _camFront = img;
+          } else {
+            _camAerial = img;
+          }
+        });
+      });
+    } catch (_) {
+      // ignore a malformed frame; the next one will replace it
+    }
+  }
+
   List<Box> _parseDetections(Map<String, dynamic> m) {
     final dets = m['detections'];
     if (dets is! List) return const [];
@@ -497,8 +582,16 @@ class _LidarScreenState extends State<LidarScreen>
         body: Stack(
           children: [
             Positioned.fill(
-              child: CustomPaint(
-                painter: LidarPainter(_points, _boxes, _spin),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Expanded(
+                    child: CustomPaint(
+                      painter: LidarPainter(_points, _boxes, _spin),
+                    ),
+                  ),
+                  if (kShowCameras) _cameraColumn(),
+                ],
               ),
             ),
             if (showWaitOverlay) _waitOverlay(),
@@ -510,6 +603,64 @@ class _LidarScreenState extends State<LidarScreen>
       ),
     );
   }
+
+  // Right-hand column with the two camera feeds, stacked. Starts below the top
+  // bar so the LIVE chips do not overlap the first frame.
+  Widget _cameraColumn() => Container(
+        width: 320,
+        color: const Color(0xFF0A0F16),
+        padding: const EdgeInsets.fromLTRB(8, 60, 12, 12),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.start,
+          children: [
+            _cameraPanel('FRONT', _camFront),
+            const SizedBox(height: 12),
+            _cameraPanel('AERIAL', _camAerial),
+          ],
+        ),
+      );
+
+  // Fixed 4:3 panel so both cameras sit at the top of the column and stay fully
+  // visible (rather than stretching to the full surface height).
+  Widget _cameraPanel(String label, ui.Image? img) => ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: AspectRatio(
+          aspectRatio: 4 / 3,
+          child: Container(
+          color: Colors.black,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (img != null)
+                RawImage(image: img, fit: BoxFit.cover)
+              else
+                const Center(
+                  child: Text('waiting for camera',
+                      style: TextStyle(color: Colors.white38, fontSize: 12)),
+                ),
+              Positioned(
+                left: 8,
+                top: 6,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.55),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(label,
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 1.0)),
+                ),
+              ),
+            ],
+          ),
+        ),
+        ),
+      );
 
   Widget _topBar(({Color color, String label}) badge) => Positioned(
         top: 0,
@@ -685,8 +836,13 @@ class LidarPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height / 2);
-    final scale = (min(size.width, size.height) / 2 - 44) / kMaxRange;
+    // Fit the full radar circle inside the visible viewport. On real hardware
+    // the surface matches the display and this is just min(w,h); under the AGL
+    // emulator the surface can be taller than the screen, so cap the height the
+    // circle is fitted to and lift the centre so the whole ring stays on-screen.
+    final view = min(size.width, min(size.height, 700.0));
+    final center = Offset(size.width / 2, 30 + view / 2);
+    final scale = (view / 2 - 30) / kMaxRange;
 
     _drawGrid(canvas, size, center, scale);
     _drawSweep(canvas, center, scale);

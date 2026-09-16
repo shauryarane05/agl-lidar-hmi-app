@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <rect width="256" height="256" rx="48" fill="#0A0F16"/>
+  <g fill="none" stroke="#1E5AFF" stroke-width="3" opacity="0.5">
+    <circle cx="128" cy="128" r="34"/>
+    <circle cx="128" cy="128" r="62"/>
+    <circle cx="128" cy="128" r="90"/>
+  </g>
+  <!-- radar sweep -->
+  <path d="M128 128 L128 34 A94 94 0 0 1 210 84 Z" fill="#00E5C3" opacity="0.18"/>
+  <!-- ego marker -->
+  <path d="M128 112 L140 148 L128 140 L116 148 Z" fill="#00E5C3"/>
+  <!-- detection boxes -->
+  <rect x="150" y="70" width="26" height="34" fill="none" stroke="#35D06B" stroke-width="4"/>
+  <rect x="74" y="150" width="30" height="22" fill="none" stroke="#35D06B" stroke-width="4"/>
+</svg>
