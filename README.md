@@ -36,8 +36,9 @@ turns it into 3D boxes on the same board, and rosbridge carries both to the app.
 
 ## Build and run the demo on AGL
 
-This is the full reproduction, from an AGL source tree to the demo running on
-the board.
+The quick version is below. For the complete end-to-end guide, including host
+prerequisites, getting the source, the in-review changes to apply, and
+troubleshooting, see **[REPRODUCE.md](REPRODUCE.md)**.
 
 **1. Build the image.** The demo ships under the AGL `agl-ros2` feature, on top
 of the Flutter IVI demo. From the top of a repo-synced AGL tree:
