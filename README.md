@@ -34,6 +34,50 @@ CARLA LiDAR  ->  /carla/lidar      ->  lidar_detector  ->  /carla/detections  -.
 The point cloud is produced on the target from the raw recording, the detector
 turns it into 3D boxes on the same board, and rosbridge carries both to the app.
 
+## Build and run the demo on AGL
+
+This is the full reproduction, from an AGL source tree to the demo running on
+the board.
+
+**1. Build the image.** The demo ships under the AGL `agl-ros2` feature, on top
+of the Flutter IVI demo. From the top of a repo-synced AGL tree:
+
+```sh
+source meta-agl/scripts/aglsetup.sh \
+    -m jetson-orin-nano-devkit-nvme -b build-jetson-ivi \
+    agl-demo agl-flutter agl-ros2
+bitbake agl-ivi-demo-flutter
+```
+
+**2. Flash the board.** From the image deploy directory
+(`build-jetson-ivi/tmp/deploy/images/jetson-orin-nano-devkit-nvme/`), with the
+Jetson Orin Nano in recovery mode:
+
+```sh
+sudo ./initrd-flash --erase-nvme
+```
+
+Wait for `Final status: SUCCESS`, then let the board boot.
+
+**3. Run it.** On boot the backend starts itself under `agl-lidar-demo.service`
+(a local rosbridge on port 9090, the `lidar_detector` node, and the bag replay).
+Open the "AGL LiDAR Demo" tile, or launch it from a shell:
+
+```sh
+agl-shell-activator -a activate -p agl_lidar_demo -o DP-1
+```
+
+**4. Verify it is live.** The detections are computed on the target, not
+replayed from the clip:
+
+```sh
+ros2 topic hz /carla/detections               # expect ~30 Hz
+ros2 topic info /carla/detections --verbose    # publisher: lidar_detector, not the bag
+```
+
+The sections below cover the app itself, the perception node, the offline
+launcher, and the hot-reload development loop in more detail.
+
 ## The HMI
 
 The app opens one rosbridge connection and subscribes to four topics:
