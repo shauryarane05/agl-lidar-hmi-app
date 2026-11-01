@@ -1,23 +1,24 @@
 # Perception
 
-A ROS 2 perception node for the LiDAR HMI pipeline. It turns the raw CARLA
-LiDAR point cloud into 3D bounding boxes, so the dashboard can show detected
-objects instead of only raw points.
+A ROS 2 perception node for the LiDAR HMI pipeline. It turns the raw CARLA LiDAR
+point cloud into 3D bounding boxes, so the dashboard can show detected objects
+instead of only raw points.
 
 ## lidar_detector
 
-A small C++ node built on PCL. For each `sensor_msgs/PointCloud2` on
+A small C++ node built on PCL. For each `sensor_msgs/msg/PointCloud2` on
 `/carla/lidar` it runs a classical, training-free pipeline:
 
 1. **VoxelGrid** downsample (0.2 m leaf)
-2. **PassThrough** crop in z (−2.0 to 3.0 m)
+2. **PassThrough** crop in z (-2.0 to 3.0 m)
 3. **RANSAC** ground-plane segmentation and removal (0.3 m threshold)
-4. **Euclidean clustering** (0.6 m tolerance, min 15 points)
+4. **Euclidean clustering** (0.6 m tolerance, 15 to 25000 points per cluster)
 
 Each surviving cluster becomes an axis-aligned 3D box. The node publishes:
 
-- `/carla/detections_markers` — `visualization_msgs/MarkerArray` (for viewers)
-- `/carla/detections` — `vision_msgs/Detection3DArray` (for downstream code)
+- `/carla/detections` (`vision_msgs/msg/Detection3DArray`): for downstream code.
+- `/carla/detections_markers` (`visualization_msgs/msg/MarkerArray`): CUBE
+  markers for viewers such as RViz, cleared with a DELETEALL each frame.
 
 ### Build
 
@@ -27,13 +28,13 @@ colcon build --packages-select lidar_detector
 source install/setup.bash
 ```
 
-### Run (offline, against the recorded bag)
+### Run (offline, against the recorded clip)
 
 ```sh
 # terminal 1: the detector
 ros2 run lidar_detector lidar_detector
 
-# terminal 2: replay the recorded CARLA LiDAR bag onto /carla/lidar
+# terminal 2 (from the repository root): replay the clip onto /carla/lidar
 ros2 bag play rosbag/carla_lidar
 ```
 

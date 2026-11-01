@@ -8,13 +8,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
-// ================= CONFIG (edit + hot-reload) =================
-// Self-contained demo: a recorded LiDAR bag (shipped under rosbag/) is played
-// back on-device and bridged locally, so rosbridge_server runs on the same
-// board as the app. Point at localhost. (For a live/remote source, set this to
-// the host running rosbridge_server, e.g. ws://<host-ip>:9090.)
-// Default targets an on-device rosbridge (the shipped self-contained demo).
-// Override without editing code, e.g. for the QEMU dev loop where the guest
+// Configuration. Any value can be overridden at build time with --dart-define,
+// so the same binary serves the on-device demo and the development loop.
+
+// rosbridge endpoint. The shipped demo plays the bag and runs rosbridge on the
+// same board, so this defaults to localhost. For the QEMU dev loop the guest
 // reaches the host at 10.0.2.2:
 //   flutter run -d agl-qemu --dart-define=ROSBRIDGE_URL=ws://10.0.2.2:9090
 const String kRosbridgeUrl = String.fromEnvironment(
@@ -22,48 +20,38 @@ const String kRosbridgeUrl = String.fromEnvironment(
   defaultValue: 'ws://127.0.0.1:9090',
 );
 
-// The shipped bag publishes /carla/lidar as PointCloud2 (x,y,z,intensity).
-// For a 2D LaserScan source instead, use '/scan' + 'sensor_msgs/msg/LaserScan'.
+// Raw LiDAR cloud. For a 2D LaserScan source use '/scan' with
+// 'sensor_msgs/msg/LaserScan' instead.
 const String kLidarTopic = '/carla/lidar';
 const String kLidarType = 'sensor_msgs/msg/PointCloud2';
 
-// The perception node (lidar_detector) publishes 3D bounding boxes for the
-// clustered objects on /carla/detections. Rendering these on top of the raw
-// cloud is what turns the point view into a perception view. The same topic +
-// type is the contract a learned detector (e.g. PointPillars) would publish
-// on later, so the HMI does not change when the perception backend is upgraded.
+// 3D detections from the perception node, drawn over the cloud. A learned
+// detector can publish the same message on the same topic later with no change
+// to the HMI.
 const String kDetTopic = '/carla/detections';
 const String kDetType = 'vision_msgs/msg/Detection3DArray';
 
-// Camera feeds. The finalized recording carries two RGB cameras alongside the
-// LiDAR: a forward-facing view and a top-down "aerial" view. They arrive on the
-// SAME rosbridge as everything else (sensor_msgs/Image, bgra8), so no extra
-// service is needed. Throttled server-side to keep the raw frames light.
-// Set --dart-define=SHOW_CAMERAS=false to hide the camera column.
+// Camera feeds, carried over the same rosbridge as JPEG so they stay in step
+// with the point cloud. Set --dart-define=SHOW_CAMERAS=false to hide them.
 const bool kShowCameras =
     bool.fromEnvironment('SHOW_CAMERAS', defaultValue: true);
-// JPEG-compressed camera topics: small frames arrive with near-zero latency,
-// so the camera stays in step with the LiDAR (raw frames lag behind the tiny
-// point-cloud messages over a bandwidth-limited link).
 const String kCamFrontTopic = String.fromEnvironment('CAM_FRONT_TOPIC',
     defaultValue: '/carla/hero/rgb_front/image/compressed');
 const String kCamAerialTopic = String.fromEnvironment('CAM_AERIAL_TOPIC',
     defaultValue: '/carla/hero/rgb_aerial/image/compressed');
 const String kCamType = 'sensor_msgs/msg/CompressedImage';
-const int kCamThrottleMs = 0; // frames are tiny now; take them as they arrive
+const int kCamThrottleMs = 0;
 
-const double kMaxRange = 50.0; // metres shown (matches CARLA lidar range)
+const double kMaxRange = 50.0; // metres shown, matches the CARLA lidar range
 
-// Height band (metres, relative to the sensor) kept for PointCloud2.
-// The CARLA lidar sits ~2 m up, so the ground returns near z=-2 — drop them
-// to declutter the top-down view; keep walls/cars/poles.
+// Height band kept from the cloud (metres, sensor frame). The lidar sits about
+// 2 m up, so ground returns fall near z = -2; drop them to declutter the view.
 const double kMinZ = -1.6;
 const double kMaxZ = 6.0;
 
-const Color kNear = Color(0xFF00E5C3); // close returns  (warm/teal)
-const Color kFar = Color(0xFF1E5AFF); // distant returns (cool/blue)
-const Color kDetColor = Color(0xFF35D06B); // perception boxes (green)
-// =============================================================
+const Color kNear = Color(0xFF00E5C3); // close returns
+const Color kFar = Color(0xFF1E5AFF); // distant returns
+const Color kDetColor = Color(0xFF35D06B); // perception boxes
 
 void main() => runApp(const AglLidarApp());
 
@@ -189,7 +177,7 @@ class _LidarScreenState extends State<LidarScreen>
   void _startSim() {
     _simTimer?.cancel();
     _boxes = const []; // the synthetic sweep has no perception boxes
-    _status = 'simulated scene — corridor + moving traffic';
+    _status = 'simulated scene, corridor + moving traffic';
     _simTimer = Timer.periodic(const Duration(milliseconds: 66), (_) {
       _t += 0.066;
       _setPoints(_simulateSweep(_t));
@@ -312,13 +300,13 @@ class _LidarScreenState extends State<LidarScreen>
         }),
         onDone: () => setState(() {
           _live = _LiveState.down;
-          _status = 'disconnected — is rosbridge_server running + $kLidarTopic '
+          _status = 'disconnected: is rosbridge_server running and $kLidarTopic '
               'being published?';
         }),
       );
       setState(() {
         _live = _LiveState.waiting;
-        _status = 'subscribed $kLidarTopic — waiting for data';
+        _status = 'subscribed $kLidarTopic, waiting for data';
       });
     } catch (e) {
       setState(() {
@@ -341,7 +329,7 @@ class _LidarScreenState extends State<LidarScreen>
       if (data['op'] != 'publish') return;
       final msg = data['msg'] as Map<String, dynamic>;
 
-      // Detections arrive on their own topic — update the box overlay and
+      // Detections arrive on their own topic, so update the box overlay and
       // return without touching the point layer.
       if (data['topic'] == kDetTopic || msg.containsKey('detections')) {
         setState(() => _boxes = _parseDetections(msg));
@@ -459,11 +447,8 @@ class _LidarScreenState extends State<LidarScreen>
     return out;
   }
 
-  /// Decode a vision_msgs/Detection3DArray from rosbridge. Each detection's
-  /// `bbox` carries a centre pose and a size; we keep the ground-plane footprint
-  /// (x/y centre, x/y size) and the yaw recovered from the pose quaternion.
-  // Decode a sensor_msgs/Image (raw, from rosbridge as base64) into a ui.Image
-  // and store it as the newest frame for the front or aerial panel.
+  // Decode a camera frame into a ui.Image and store it as the newest frame for
+  // the given panel. Handles CompressedImage (jpeg/png) and raw sensor_msgs/Image.
   void _decodeCamera(Map<String, dynamic> m, {required bool isFront}) {
     try {
       // CompressedImage (jpeg/png): let the codec decode the encoded bytes.
@@ -522,6 +507,9 @@ class _LidarScreenState extends State<LidarScreen>
     }
   }
 
+  /// Decode a vision_msgs/Detection3DArray. Each detection's bbox carries a
+  /// centre pose and a size; keep the ground-plane footprint (x/y centre, x/y
+  /// size) and the yaw recovered from the pose quaternion.
   List<Box> _parseDetections(Map<String, dynamic> m) {
     final dets = m['detections'];
     if (dets is! List) return const [];
@@ -539,7 +527,7 @@ class _LidarScreenState extends State<LidarScreen>
       final sx = (size['x'] as num?)?.toDouble() ?? 0;
       final sy = (size['y'] as num?)?.toDouble() ?? 0;
       if (sx <= 0 || sy <= 0) continue;
-      // yaw from the quaternion (z,w) — planar heading about the vertical axis.
+      // yaw from the quaternion (z, w): planar heading about the vertical axis.
       final q = center['orientation'] as Map?;
       final qz = (q?['z'] as num?)?.toDouble() ?? 0;
       final qw = (q?['w'] as num?)?.toDouble() ?? 1;
@@ -870,9 +858,9 @@ class LidarPainter extends CustomPainter {
     _drawEgo(canvas, center);
   }
 
-  /// Draw each detection as a footprint rectangle on the ground plane. Sensor
-  /// x (forward) maps to screen up, y (left) maps to screen left — the same
-  /// transform the points use — so boxes sit exactly over their clusters.
+  /// Draw each detection as a footprint rectangle on the ground plane. Sensor x
+  /// (forward) maps to screen up and y (left) maps to screen left, the same
+  /// transform the points use, so boxes sit exactly over their clusters.
   void _drawBoxes(Canvas canvas, Offset center, double scale) {
     if (boxes.isEmpty) return;
     final stroke = Paint()
@@ -972,7 +960,7 @@ class LidarPainter extends CustomPainter {
   void _drawPoints(Canvas canvas, Offset center, double scale) {
     if (points.isEmpty) return;
     // Bucket points into colour bands and draw each band in one batched call
-    // (drawRawPoints) — far faster than a drawCircle per point.
+    // (drawRawPoints), far faster than a drawCircle per point.
     final buckets = List.generate(_bands, (_) => <double>[]);
     for (final pt in points) {
       // sensor x fwd -> screen up, y left -> screen left

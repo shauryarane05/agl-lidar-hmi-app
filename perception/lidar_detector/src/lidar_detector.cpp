@@ -1,3 +1,9 @@
+// lidar_detector: turns a raw LiDAR point cloud into 3D object detections with
+// a classic PCL pipeline (voxel downsample, z-crop, RANSAC ground removal,
+// Euclidean clustering). Subscribes to /carla/lidar and publishes
+// vision_msgs/Detection3DArray on /carla/detections, plus cube markers on
+// /carla/detections_markers for viewers.
+
 #include <memory>
 #include <vector>
 #include <algorithm>
@@ -131,7 +137,8 @@ private:
 
     marker_pub_->publish(ma);
     det_pub_->publish(da);
-    RCLCPP_INFO(get_logger(), "frame: %zu pts -> %zu clusters", cloud->size(), clusters.size());
+    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
+      "frame: %zu pts -> %zu clusters", cloud->size(), clusters.size());
   }
 
   void publishDeleteAll(const std_msgs::msg::Header & h) {
