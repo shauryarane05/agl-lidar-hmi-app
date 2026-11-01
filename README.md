@@ -10,6 +10,12 @@ The repository ships a recorded CARLA LiDAR clip and a launcher script, so the
 whole demo runs fully offline with no live CARLA instance, no GPU, and no
 network.
 
+![The AGL LiDAR Demo running on the Jetson Orin Nano](docs/hmi-dashboard.png)
+
+*The dashboard on the Jetson Orin Nano: a top-down LiDAR view with live 3D
+detection boxes, plus the forward and aerial camera feeds. The badges show the
+point count, objects found, update rate, and link status.*
+
 This application was built for Google Summer of Code 2026 with Automotive Grade
 Linux. It is packaged upstream in AGL as `agl-lidar-demo`. See the
 [project blog](https://shauryarane05.github.io/agl-gsoc-2026-blog/) and the
@@ -43,6 +49,11 @@ The app opens one rosbridge connection and subscribes to four topics:
 publishes it today, and a learned detector (for example PointPillars) can
 publish the same message later, so the HMI does not change when the perception
 backend is upgraded.
+
+![LiDAR point cloud with detection boxes](docs/hmi-detections.png)
+
+*Green boxes are the perception node's 3D detections, drawn over the raw point
+cloud and computed on the target in real time.*
 
 The view auto-starts in LIVE mode and connects to the local rosbridge. A
 built-in simulated mode draws a synthetic scene when no source is connected.
